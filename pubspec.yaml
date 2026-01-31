@@ -1,0 +1,29 @@
+name: agrisentinel_demo
+description: "A new Flutter project."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.3 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  # Added dependencies for AI and GPS
+  image_picker: ^1.0.4
+  tflite_flutter: ^0.11.0
+  geolocator: ^10.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Ensure these assets exist in your folder
+  assets:
+    - assets/model.tflite
+    - assets/labels.txt

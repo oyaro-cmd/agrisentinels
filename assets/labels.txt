@@ -1,0 +1,3 @@
+0 healthy
+1 armyworm
+2 leaf blight
