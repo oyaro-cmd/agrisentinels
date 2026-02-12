@@ -30,9 +30,11 @@ AgriSentinels is an AI-powered early warning system designed to help farmers det
 
 \- \*\*Database:\*\* Firebase / PostgreSQL (planned)
 
+\## Update
+
+Improved heatmap logic and GPS accuracy.
+
 
 
 \## 📂 Project Structure
-
-
 
