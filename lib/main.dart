@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:image/image.dart' as img;
 
 void main() {
   runApp(const MyApp());
@@ -27,6 +28,24 @@ class MyApp extends StatelessWidget {
   }
 }
 
+class ScanRecord {
+  final String imagePath;
+  final String result;
+  final double confidence;
+  final String severity;
+  final String location;
+  final DateTime timestamp;
+
+  ScanRecord({
+    required this.imagePath,
+    required this.result,
+    required this.confidence,
+    required this.severity,
+    required this.location,
+    required this.timestamp,
+  });
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -41,9 +60,21 @@ class _HomePageState extends State<HomePage> {
   String _locationMessage = "Waiting for GPS...";
   double _confidence = 0.0;
   bool _isDemoMode = false; // Failsafe if model is missing
+  final List<ScanRecord> _scanHistory = [];
 
   final ImagePicker _picker = ImagePicker();
   final List<String> labels = ["Healthy", "Armyworm", "Leaf Blight"];
+
+  final Map<String, String> adviceByLabel = {
+    "Healthy": "Keep monitoring weekly, remove weeds, and maintain balanced irrigation and nutrition.",
+    "Armyworm": "Inspect early morning/evening, hand-pick larvae, remove infested leaves, and consider approved biopesticides (e.g., Bt) if outbreaks spread.",
+    "Leaf Blight": "Remove infected leaves, improve airflow, avoid overhead watering, and apply a recommended fungicide if symptoms persist.",
+  };
+  final Map<String, String> severityByLabel = {
+    "Healthy": "Low",
+    "Armyworm": "High",
+    "Leaf Blight": "Medium",
+  };
 
   @override
   void initState() {
@@ -121,6 +152,39 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  void _addHistoryEntry({
+    required String imagePath,
+    required String result,
+    required double confidence,
+  }) {
+    final severity = severityByLabel[result] ?? "Unknown";
+    final location = _locationMessage;
+
+    setState(() {
+      _scanHistory.insert(
+        0,
+        ScanRecord(
+          imagePath: imagePath,
+          result: result,
+          confidence: confidence,
+          severity: severity,
+          location: location,
+          timestamp: DateTime.now(),
+        ),
+      );
+
+      if (_scanHistory.length > 10) {
+        _scanHistory.removeLast();
+      }
+    });
+  }
+
+  String _formatTimestamp(DateTime dateTime) {
+    final hours = dateTime.hour.toString().padLeft(2, "0");
+    final minutes = dateTime.minute.toString().padLeft(2, "0");
+    return "${dateTime.month}/${dateTime.day} ${hours}:${minutes}";
+  }
+
   // 4a. REAL Classification
   Future<void> classifyImage(File image) async {
     if (_interpreter == null) {
@@ -129,30 +193,44 @@ class _HomePageState extends State<HomePage> {
     }
 
     try {
-      final bytes = await image.readAsBytes();
-      final input = Float32List(1 * 224 * 224 * 3);
-      int i = 0;
+      final rawBytes = await image.readAsBytes();
+      final decoded = img.decodeImage(rawBytes);
 
-      for (int y = 0; y < 224; y++) {
-        for (int x = 0; x < 224; x++) {
-          int pixelIndex = ((y * 224 + x) % bytes.length); 
-          input[i++] = bytes[pixelIndex] / 255.0; 
-          input[i++] = bytes[pixelIndex] / 255.0; 
-          input[i++] = bytes[pixelIndex] / 255.0; 
-        }
+      if (decoded == null) {
+        _simulatePrediction();
+        return;
+      }
+
+      final processed = img.copyResizeCropSquare(decoded, size: 224);
+      final rgbaBytes = processed.getBytes();
+      final input = Float32List(1 * 224 * 224 * 3);
+
+      int i = 0;
+      for (int p = 0; p < rgbaBytes.length; p += 4) {
+        input[i++] = rgbaBytes[p] / 255.0;
+        input[i++] = rgbaBytes[p + 1] / 255.0;
+        input[i++] = rgbaBytes[p + 2] / 255.0;
       }
 
       var output = List.filled(3, 0.0).reshape([1, 3]);
       _interpreter!.run(input.reshape([1, 224, 224, 3]), output);
 
       int index = output[0].indexOf(output[0].reduce((a, b) => a > b ? a : b));
+      final result = labels[index];
+      final confidence = output[0][index] * 100;
 
       setState(() {
-        _result = labels[index];
-        _confidence = output[0][index] * 100;
+        _result = result;
+        _confidence = confidence;
       });
+
+      _addHistoryEntry(
+        imagePath: image.path,
+        result: result,
+        confidence: confidence,
+      );
     } catch (e) {
-      _simulatePrediction(); // Fallback if matrix math fails
+      _simulatePrediction(); // Fallback if preprocessing fails
     }
   }
 
@@ -162,13 +240,24 @@ class _HomePageState extends State<HomePage> {
     final random = Random();
     int index = random.nextInt(3);
     
+    final result = labels[index];
+    final confidence = 85.0 + random.nextInt(14);
+
     setState(() {
-      _result = labels[index];
-      _confidence = 85.0 + random.nextInt(14);
+      _result = result;
+      _confidence = confidence;
     });
     
+    if (_image != null) {
+      _addHistoryEntry(
+        imagePath: _image!.path,
+        result: result,
+        confidence: confidence,
+      );
+    }
+
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("⚠️ Simulating Result (Check model.tflite)")),
+      const SnackBar(content: Text("?? Simulating Result (Check model.tflite)")),
     );
   }
 
@@ -263,9 +352,66 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     if (_result != "Analyzing...")
+                      Container(
+                        margin: const EdgeInsets.only(top: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: severityByLabel[_result] == "Low"
+                              ? Colors.green[100]
+                              : (severityByLabel[_result] == "Medium"
+                                  ? Colors.orange[100]
+                                  : Colors.red[100]),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: severityByLabel[_result] == "Low"
+                                ? Colors.green
+                                : (severityByLabel[_result] == "Medium"
+                                    ? Colors.orange
+                                    : Colors.red),
+                          ),
+                        ),
+                        child: Text(
+                          "Severity: ${severityByLabel[_result] ?? "Unknown"}",
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: severityByLabel[_result] == "Low"
+                                ? Colors.green[800]
+                                : (severityByLabel[_result] == "Medium"
+                                    ? Colors.orange[800]
+                                    : Colors.red[800]),
+                          ),
+                        ),
+                      ),
+                    if (_result != "Analyzing...")
                       Text(
                         "Confidence: ${_confidence.toStringAsFixed(1)}%",
                         style: TextStyle(color: Colors.grey[600]),
+                      ),
+                    if (_result != "Analyzing...")
+                      const SizedBox(height: 12),
+                    if (_result != "Analyzing...")
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              "Recommended Actions",
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              adviceByLabel[_result] ?? "No guidance available for this result.",
+                              style: TextStyle(color: Colors.grey[700]),
+                            ),
+                          ],
+                        ),
                       ),
                   ],
                 ),
@@ -308,6 +454,85 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
+
+            const SizedBox(height: 30),
+
+            // History
+            if (_scanHistory.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "Recent Scans",
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 12),
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemBuilder: (context, index) {
+                        final scan = _scanHistory[index];
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey.shade200),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.05),
+                                blurRadius: 6,
+                                offset: const Offset(0, 3),
+                              )
+                            ],
+                          ),
+                          child: Row(
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.file(
+                                  File(scan.imagePath),
+                                  width: 56,
+                                  height: 56,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      scan.result,
+                                      style: const TextStyle(fontWeight: FontWeight.bold),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      "Severity: ${scan.severity} ??? ${scan.confidence.toStringAsFixed(1)}%",
+                                      style: TextStyle(color: Colors.grey[700]),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      "${scan.location} ??? ${_formatTimestamp(scan.timestamp)}",
+                                      style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemCount: _scanHistory.length,
+                    ),
+                  ],
+                ),
+              ),
+
+            const SizedBox(height: 20),
           ],
         ),
       ),
