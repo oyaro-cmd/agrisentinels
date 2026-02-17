@@ -201,15 +201,20 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
-      final processed = img.copyResizeCropSquare(decoded, size: 224);
+      // Teachable Machine expects a direct resize (no crop) with [-1, 1] normalization.
+      final processed = img.copyResize(
+        decoded,
+        width: 224,
+        height: 224,
+      );
       final rgbaBytes = processed.getBytes();
       final input = Float32List(1 * 224 * 224 * 3);
 
       int i = 0;
       for (int p = 0; p < rgbaBytes.length; p += 4) {
-        input[i++] = rgbaBytes[p] / 255.0;
-        input[i++] = rgbaBytes[p + 1] / 255.0;
-        input[i++] = rgbaBytes[p + 2] / 255.0;
+        input[i++] = (rgbaBytes[p] / 127.5) - 1.0;
+        input[i++] = (rgbaBytes[p + 1] / 127.5) - 1.0;
+        input[i++] = (rgbaBytes[p + 2] / 127.5) - 1.0;
       }
 
       var output = List.filled(3, 0.0).reshape([1, 3]);
