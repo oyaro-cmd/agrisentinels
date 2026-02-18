@@ -33,6 +33,12 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Local datasets and review artifacts
+/dataset/
+
+# Export artifacts
+/assets/model_unquant.tflite
+
 # Symbolication related
 app.*.symbols
 
