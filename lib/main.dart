@@ -54,6 +54,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  static const double _confidenceThreshold = 60.0;
   Interpreter? _interpreter;
   File? _image;
   String _result = "Ready to Scan";
@@ -69,11 +70,13 @@ class _HomePageState extends State<HomePage> {
     "Healthy": "Keep monitoring weekly, remove weeds, and maintain balanced irrigation and nutrition.",
     "Armyworm": "Inspect early morning/evening, hand-pick larvae, remove infested leaves, and consider approved biopesticides (e.g., Bt) if outbreaks spread.",
     "Leaf Blight": "Remove infected leaves, improve airflow, avoid overhead watering, and apply a recommended fungicide if symptoms persist.",
+    "Unknown": "Low confidence result. Try a clearer close-up image with good lighting.",
   };
   final Map<String, String> severityByLabel = {
     "Healthy": "Low",
     "Armyworm": "High",
     "Leaf Blight": "Medium",
+    "Unknown": "Unknown",
   };
 
   @override
@@ -221,8 +224,11 @@ class _HomePageState extends State<HomePage> {
       _interpreter!.run(input.reshape([1, 224, 224, 3]), output);
 
       int index = output[0].indexOf(output[0].reduce((a, b) => a > b ? a : b));
-      final result = labels[index];
+      String result = labels[index];
       final confidence = output[0][index] * 100;
+      if (confidence < _confidenceThreshold) {
+        result = "Unknown";
+      }
 
       setState(() {
         _result = result;
@@ -245,8 +251,11 @@ class _HomePageState extends State<HomePage> {
     final random = Random();
     int index = random.nextInt(3);
     
-    final result = labels[index];
+    String result = labels[index];
     final confidence = 85.0 + random.nextInt(14);
+    if (confidence < _confidenceThreshold) {
+      result = "Unknown";
+    }
 
     setState(() {
       _result = result;
@@ -339,10 +348,18 @@ class _HomePageState extends State<HomePage> {
                 margin: const EdgeInsets.symmetric(horizontal: 20),
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: _result == "Analyzing..." ? Colors.white : (_result == "Healthy" ? Colors.green[50] : Colors.red[50]),
+                  color: _result == "Analyzing..."
+                      ? Colors.white
+                      : (_result == "Healthy"
+                          ? Colors.green[50]
+                          : (_result == "Unknown" ? Colors.grey[100] : Colors.red[50])),
                   borderRadius: BorderRadius.circular(15),
                   border: Border.all(
-                    color: _result == "Analyzing..." ? Colors.grey.shade200 : (_result == "Healthy" ? Colors.green : Colors.red),
+                    color: _result == "Analyzing..."
+                        ? Colors.grey.shade200
+                        : (_result == "Healthy"
+                            ? Colors.green
+                            : (_result == "Unknown" ? Colors.grey : Colors.red)),
                     width: 1,
                   ),
                 ),
@@ -353,7 +370,9 @@ class _HomePageState extends State<HomePage> {
                       style: TextStyle(
                         fontSize: 24, 
                         fontWeight: FontWeight.w900,
-                        color: _result == "Healthy" ? Colors.green[800] : Colors.red[800],
+                        color: _result == "Healthy"
+                            ? Colors.green[800]
+                            : (_result == "Unknown" ? Colors.grey[800] : Colors.red[800]),
                       ),
                     ),
                     if (_result != "Analyzing...")
@@ -365,14 +384,18 @@ class _HomePageState extends State<HomePage> {
                               ? Colors.green[100]
                               : (severityByLabel[_result] == "Medium"
                                   ? Colors.orange[100]
-                                  : Colors.red[100]),
+                                  : (severityByLabel[_result] == "Unknown"
+                                      ? Colors.grey[200]
+                                      : Colors.red[100])),
                           borderRadius: BorderRadius.circular(999),
                           border: Border.all(
                             color: severityByLabel[_result] == "Low"
                                 ? Colors.green
                                 : (severityByLabel[_result] == "Medium"
                                     ? Colors.orange
-                                    : Colors.red),
+                                    : (severityByLabel[_result] == "Unknown"
+                                        ? Colors.grey
+                                        : Colors.red)),
                           ),
                         ),
                         child: Text(
@@ -383,7 +406,9 @@ class _HomePageState extends State<HomePage> {
                                 ? Colors.green[800]
                                 : (severityByLabel[_result] == "Medium"
                                     ? Colors.orange[800]
-                                    : Colors.red[800]),
+                                    : (severityByLabel[_result] == "Unknown"
+                                        ? Colors.grey[800]
+                                        : Colors.red[800])),
                           ),
                         ),
                       ),
@@ -515,12 +540,12 @@ class _HomePageState extends State<HomePage> {
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      "Severity: ${scan.severity} ??? ${scan.confidence.toStringAsFixed(1)}%",
+                                      "Severity: ${scan.severity} - ${scan.confidence.toStringAsFixed(1)}%",
                                       style: TextStyle(color: Colors.grey[700]),
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      "${scan.location} ??? ${_formatTimestamp(scan.timestamp)}",
+                                      "${scan.location} - ${_formatTimestamp(scan.timestamp)}",
                                       style: TextStyle(color: Colors.grey[600], fontSize: 12),
                                     ),
                                   ],
