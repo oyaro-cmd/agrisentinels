@@ -64,7 +64,8 @@ class _HomePageState extends State<HomePage> {
   final List<ScanRecord> _scanHistory = [];
 
   final ImagePicker _picker = ImagePicker();
-  final List<String> labels = ["Healthy", "Armyworm", "Leaf Blight"];
+  // Must match labels.txt order from the exported model.
+  final List<String> labels = ["Armyworm", "Healthy", "Leaf Blight"];
 
   final Map<String, String> adviceByLabel = {
     "Healthy": "Keep monitoring weekly, remove weeds, and maintain balanced irrigation and nutrition.",
