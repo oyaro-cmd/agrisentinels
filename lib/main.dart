@@ -46,6 +46,13 @@ class ScanRecord {
   });
 }
 
+class _Score {
+  final String label;
+  final double score;
+
+  _Score(this.label, this.score);
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -60,12 +67,29 @@ class _HomePageState extends State<HomePage> {
   String _result = "Ready to Scan";
   String _locationMessage = "Waiting for GPS...";
   double _confidence = 0.0;
+  List<_Score> _top3 = [];
   bool _isDemoMode = false; // Failsafe if model is missing
   final List<ScanRecord> _scanHistory = [];
 
   final ImagePicker _picker = ImagePicker();
   // Must match labels.txt order from the exported model.
   final List<String> labels = ["Armyworm", "Healthy", "Leaf Blight"];
+
+  List<_Score> _buildTop3(List<double> scores) {
+    final all = <_Score>[];
+    for (int i = 0; i < scores.length; i++) {
+      all.add(_Score(labels[i], scores[i] * 100));
+    }
+    all.sort((a, b) => b.score.compareTo(a.score));
+    return all.take(3).toList();
+  }
+
+  List<_Score> _randomTop3(Random random) {
+    final raw = List<double>.generate(labels.length, (_) => random.nextDouble());
+    final sum = raw.fold<double>(0, (a, b) => a + b);
+    final scores = raw.map((v) => v / sum).toList();
+    return _buildTop3(scores);
+  }
 
   final Map<String, String> adviceByLabel = {
     "Healthy": "Keep monitoring weekly, remove weeds, and maintain balanced irrigation and nutrition.",
@@ -143,6 +167,7 @@ class _HomePageState extends State<HomePage> {
       _image = File(picked.path);
       _result = "Analyzing...";
       _confidence = 0.0;
+      _top3 = [];
     });
 
     // Verify location again when scanning
@@ -227,6 +252,7 @@ class _HomePageState extends State<HomePage> {
       int index = output[0].indexOf(output[0].reduce((a, b) => a > b ? a : b));
       String result = labels[index];
       final confidence = output[0][index] * 100;
+      final top3 = _buildTop3(List<double>.from(output[0]));
       if (confidence < _confidenceThreshold) {
         result = "Unknown";
       }
@@ -234,6 +260,7 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _result = result;
         _confidence = confidence;
+        _top3 = top3;
       });
 
       _addHistoryEntry(
@@ -254,6 +281,7 @@ class _HomePageState extends State<HomePage> {
     
     String result = labels[index];
     final confidence = 85.0 + random.nextInt(14);
+    final top3 = _randomTop3(random);
     if (confidence < _confidenceThreshold) {
       result = "Unknown";
     }
@@ -261,6 +289,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _result = result;
       _confidence = confidence;
+      _top3 = top3;
     });
     
     if (_image != null) {
@@ -417,6 +446,33 @@ class _HomePageState extends State<HomePage> {
                       Text(
                         "Confidence: ${_confidence.toStringAsFixed(1)}%",
                         style: TextStyle(color: Colors.grey[600]),
+                      ),
+                    if (_result != "Analyzing..." && _top3.isNotEmpty)
+                      const SizedBox(height: 8),
+                    if (_result != "Analyzing..." && _top3.isNotEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[50],
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              "Top 3 Predictions",
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 6),
+                            for (final score in _top3)
+                              Text(
+                                "${score.label}: ${score.score.toStringAsFixed(1)}%",
+                                style: TextStyle(color: Colors.grey[700]),
+                              ),
+                          ],
+                        ),
                       ),
                     if (_result != "Analyzing...")
                       const SizedBox(height: 12),
