@@ -84,11 +84,22 @@ class _HomePageState extends State<HomePage> {
     return all.take(3).toList();
   }
 
-  List<_Score> _randomTop3(Random random) {
+  List<double> _randomProbabilities(Random random) {
     final raw = List<double>.generate(labels.length, (_) => random.nextDouble());
     final sum = raw.fold<double>(0, (a, b) => a + b);
-    final scores = raw.map((v) => v / sum).toList();
-    return _buildTop3(scores);
+    return raw.map((v) => v / sum).toList();
+  }
+
+  double _demoConfidenceFromProbabilities(
+    List<double> probabilities, {
+    required double quality,
+  }) {
+    final sorted = [...probabilities]..sort((a, b) => b.compareTo(a));
+    final top1 = sorted[0];
+    final top2 = sorted.length > 1 ? sorted[1] : 0.0;
+    final margin = (top1 - top2).clamp(0.0, 1.0);
+    final blended = (0.55 * top1) + (0.35 * margin) + (0.10 * quality);
+    return blended.clamp(0.0, 1.0) * 100.0;
   }
 
   final Map<String, String> adviceByLabel = {
@@ -277,11 +288,15 @@ class _HomePageState extends State<HomePage> {
   void _simulatePrediction() async {
     await Future.delayed(const Duration(seconds: 2)); // Fake thinking time
     final random = Random();
-    int index = random.nextInt(3);
-    
+    final probabilities = _randomProbabilities(random);
+    final top3 = _buildTop3(probabilities);
+    final confidence = _demoConfidenceFromProbabilities(
+      probabilities,
+      quality: 0.85 + (random.nextDouble() * 0.15),
+    );
+    final index =
+        probabilities.indexOf(probabilities.reduce((a, b) => a > b ? a : b));
     String result = labels[index];
-    final confidence = 85.0 + random.nextInt(14);
-    final top3 = _randomTop3(random);
     if (confidence < _confidenceThreshold) {
       result = "Unknown";
     }
