@@ -1,10 +1,13 @@
-import 'dart:io';
+﻿import 'dart:io';
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image/image.dart' as img;
 
 void main() {
@@ -44,6 +47,29 @@ class ScanRecord {
     required this.location,
     required this.timestamp,
   });
+
+  Map<String, dynamic> toMap() {
+    return {
+      "imagePath": imagePath,
+      "result": result,
+      "confidence": confidence,
+      "severity": severity,
+      "location": location,
+      "timestamp": timestamp.toIso8601String(),
+    };
+  }
+
+  factory ScanRecord.fromMap(Map<String, dynamic> map) {
+    return ScanRecord(
+      imagePath: map["imagePath"] as String? ?? "",
+      result: map["result"] as String? ?? "Unknown",
+      confidence: (map["confidence"] as num?)?.toDouble() ?? 0.0,
+      severity: map["severity"] as String? ?? "Unknown",
+      location: map["location"] as String? ?? "Unknown",
+      timestamp: DateTime.tryParse(map["timestamp"] as String? ?? "") ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+    );
+  }
 }
 
 class _Score {
@@ -62,6 +88,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   static const double _confidenceThreshold = 60.0;
+  static const String _historyStorageKey = "scan_history_v1";
   Interpreter? _interpreter;
   File? _image;
   String _result = "Ready to Scan";
@@ -72,20 +99,21 @@ class _HomePageState extends State<HomePage> {
   final List<ScanRecord> _scanHistory = [];
 
   final ImagePicker _picker = ImagePicker();
-  // Must match labels.txt order from the exported model.
-  final List<String> labels = ["Armyworm", "Healthy", "Leaf Blight"];
+  List<String> _labels = const ["Armyworm", "Healthy", "Leaf Blight"];
 
   List<_Score> _buildTop3(List<double> scores) {
     final all = <_Score>[];
-    for (int i = 0; i < scores.length; i++) {
-      all.add(_Score(labels[i], scores[i] * 100));
+    final count = min(scores.length, _labels.length);
+    for (int i = 0; i < count; i++) {
+      all.add(_Score(_labels[i], scores[i] * 100));
     }
     all.sort((a, b) => b.score.compareTo(a.score));
     return all.take(3).toList();
   }
 
   List<double> _randomProbabilities(Random random) {
-    final raw = List<double>.generate(labels.length, (_) => random.nextDouble());
+    final raw =
+        List<double>.generate(_labels.length, (_) => random.nextDouble());
     final sum = raw.fold<double>(0, (a, b) => a + b);
     return raw.map((v) => v / sum).toList();
   }
@@ -118,17 +146,105 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _loadHistory();
     loadModel();
     _checkLocationPermissions();
+  }
+  Future<List<String>> _loadLabelsFromAsset() async {
+    final raw = await rootBundle.loadString("assets/labels.txt");
+    final parsed = <String>[];
+    for (final line in raw.split("\n")) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) {
+        continue;
+      }
+      final match = RegExp(r"^\d+\s+(.*)$").firstMatch(trimmed);
+      final label = (match?.group(1) ?? trimmed).trim();
+      parsed.add(_toDisplayLabel(label));
+    }
+    if (parsed.isEmpty) {
+      throw StateError("labels.txt is empty");
+    }
+    return parsed;
+  }
+
+  String _toDisplayLabel(String label) {
+    final cleaned = label.replaceAll(RegExp(r"[_-]+"), " ").toLowerCase();
+    return cleaned
+        .split(" ")
+        .where((part) => part.isNotEmpty)
+        .map((part) => "${part[0].toUpperCase()}${part.substring(1)}")
+        .join(" ");
+  }
+
+  List<double> _softmax(List<double> values) {
+    final maxValue = values.reduce(max);
+    final expValues = values.map((v) => exp(v - maxValue)).toList();
+    final sumExp = expValues.fold<double>(0, (a, b) => a + b);
+    return expValues.map((v) => v / sumExp).toList();
+  }
+
+  List<double> _ensureProbabilities(List<double> scores) {
+    final inRange = scores.every((v) => v >= 0.0 && v <= 1.0);
+    final sum = scores.fold<double>(0, (a, b) => a + b);
+    if (inRange && (sum - 1.0).abs() <= 0.05) {
+      return scores;
+    }
+    return _softmax(scores);
+  }
+
+  int _quantizeToInt(double value, double scale, int zeroPoint, int min, int max) {
+    if (scale == 0) {
+      return value.round().clamp(min, max);
+    }
+    final q = (value / scale + zeroPoint).round();
+    return q.clamp(min, max);
+  }
+
+  Future<void> _loadHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_historyStorageKey);
+    if (raw == null || raw.isEmpty) {
+      return;
+    }
+    final decoded = jsonDecode(raw) as List<dynamic>;
+    final restored = decoded
+        .map((entry) => ScanRecord.fromMap(Map<String, dynamic>.from(entry)))
+        .toList();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _scanHistory
+        ..clear()
+        ..addAll(restored);
+    });
+  }
+
+  Future<void> _saveHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final payload = jsonEncode(_scanHistory.map((entry) => entry.toMap()).toList());
+    await prefs.setString(_historyStorageKey, payload);
   }
 
   // 1. Load AI Model (With Failsafe)
   Future<void> loadModel() async {
     try {
-      _interpreter = await Interpreter.fromAsset("model.tflite");
-      debugPrint("✅ Model Loaded Successfully");
+      final loadedLabels = await _loadLabelsFromAsset();
+      _interpreter = await Interpreter.fromAsset("assets/model.tflite");
+      final outputTensor = _interpreter!.getOutputTensor(0);
+      final classCount = outputTensor.shape.last;
+      if (loadedLabels.length != classCount) {
+        throw StateError(
+          "labels count (${loadedLabels.length}) does not match model output ($classCount)",
+        );
+      }
+      setState(() {
+        _labels = loadedLabels;
+      });
+      debugPrint("Model loaded. Labels: ${_labels.join(", ")}");
     } catch (e) {
-      debugPrint("⚠️ Model not found. Switching to DEMO MODE.");
+      debugPrint("Model load failed. Switching to demo mode. Error: $e");
       setState(() {
         _isDemoMode = true;
         _result = "Demo Mode (Model Missing)";
@@ -217,12 +333,101 @@ class _HomePageState extends State<HomePage> {
         _scanHistory.removeLast();
       }
     });
+    _saveHistory();
   }
 
   String _formatTimestamp(DateTime dateTime) {
     final hours = dateTime.hour.toString().padLeft(2, "0");
     final minutes = dateTime.minute.toString().padLeft(2, "0");
-    return "${dateTime.month}/${dateTime.day} ${hours}:${minutes}";
+    return "${dateTime.month}/${dateTime.day} $hours:$minutes";
+  }
+
+  Object _buildInputTensorData(
+    Uint8List rgbaBytes,
+    TensorType inputType,
+    QuantizationParams inputParams,
+    int width,
+    int height,
+  ) {
+    if (inputType == TensorType.float32) {
+      final input = Float32List(width * height * 3);
+      int i = 0;
+      for (int p = 0; p < rgbaBytes.length; p += 4) {
+        input[i++] = (rgbaBytes[p] / 127.5) - 1.0;
+        input[i++] = (rgbaBytes[p + 1] / 127.5) - 1.0;
+        input[i++] = (rgbaBytes[p + 2] / 127.5) - 1.0;
+      }
+      return input.reshape([1, height, width, 3]);
+    }
+
+    if (inputType == TensorType.uint8) {
+      final input = Uint8List(width * height * 3);
+      int i = 0;
+      for (int p = 0; p < rgbaBytes.length; p += 4) {
+        final r = (rgbaBytes[p] / 127.5) - 1.0;
+        final g = (rgbaBytes[p + 1] / 127.5) - 1.0;
+        final b = (rgbaBytes[p + 2] / 127.5) - 1.0;
+        input[i++] =
+            _quantizeToInt(r, inputParams.scale, inputParams.zeroPoint, 0, 255);
+        input[i++] =
+            _quantizeToInt(g, inputParams.scale, inputParams.zeroPoint, 0, 255);
+        input[i++] =
+            _quantizeToInt(b, inputParams.scale, inputParams.zeroPoint, 0, 255);
+      }
+      return input.reshape([1, height, width, 3]);
+    }
+
+    if (inputType == TensorType.int8) {
+      final input = Int8List(width * height * 3);
+      int i = 0;
+      for (int p = 0; p < rgbaBytes.length; p += 4) {
+        final r = (rgbaBytes[p] / 127.5) - 1.0;
+        final g = (rgbaBytes[p + 1] / 127.5) - 1.0;
+        final b = (rgbaBytes[p + 2] / 127.5) - 1.0;
+        input[i++] =
+            _quantizeToInt(r, inputParams.scale, inputParams.zeroPoint, -128, 127);
+        input[i++] =
+            _quantizeToInt(g, inputParams.scale, inputParams.zeroPoint, -128, 127);
+        input[i++] =
+            _quantizeToInt(b, inputParams.scale, inputParams.zeroPoint, -128, 127);
+      }
+      return input.reshape([1, height, width, 3]);
+    }
+
+    throw UnsupportedError("Unsupported input tensor type: $inputType");
+  }
+
+  List<double> _readOutputScores(
+    TensorType outputType,
+    QuantizationParams outputParams,
+    Object outputBuffer,
+  ) {
+    if (outputType == TensorType.float32) {
+      final values = List<double>.from((outputBuffer as List)[0]);
+      return _ensureProbabilities(values);
+    }
+
+    if (outputType == TensorType.uint8) {
+      final quantized = List<int>.from((outputBuffer as List)[0]);
+      final values = quantized
+          .map((q) => outputParams.scale == 0
+              ? q.toDouble()
+              : (q - outputParams.zeroPoint) * outputParams.scale)
+          .toList();
+      return _ensureProbabilities(values);
+    }
+
+    if (outputType == TensorType.int8) {
+      final quantized = List<int>.from((outputBuffer as List)[0]);
+      final values = quantized
+          .map((q) => outputParams.scale == 0
+              ? q.toDouble()
+              : (q - outputParams.zeroPoint) * outputParams.scale)
+          .toList();
+      return _ensureProbabilities(values);
+    }
+
+    throw UnsupportedError("Unsupported output tensor type: $outputType");
   }
 
   // 4a. REAL Classification
@@ -241,29 +446,48 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
-      // Teachable Machine expects a direct resize (no crop) with [-1, 1] normalization.
+      final inputTensor = _interpreter!.getInputTensor(0);
+      final inputShape = inputTensor.shape;
+      if (inputShape.length < 4 || inputShape[3] != 3) {
+        throw StateError("Unexpected input tensor shape: $inputShape");
+      }
+      final inputHeight = inputShape[1];
+      final inputWidth = inputShape[2];
+
       final processed = img.copyResize(
         decoded,
-        width: 224,
-        height: 224,
+        width: inputWidth,
+        height: inputHeight,
       );
       final rgbaBytes = processed.getBytes();
-      final input = Float32List(1 * 224 * 224 * 3);
+      final inputData = _buildInputTensorData(
+        rgbaBytes,
+        inputTensor.type,
+        inputTensor.params,
+        inputWidth,
+        inputHeight,
+      );
 
-      int i = 0;
-      for (int p = 0; p < rgbaBytes.length; p += 4) {
-        input[i++] = (rgbaBytes[p] / 127.5) - 1.0;
-        input[i++] = (rgbaBytes[p + 1] / 127.5) - 1.0;
-        input[i++] = (rgbaBytes[p + 2] / 127.5) - 1.0;
+      final outputTensor = _interpreter!.getOutputTensor(0);
+      final classCount = outputTensor.shape.last;
+      Object outputBuffer;
+      if (outputTensor.type == TensorType.float32) {
+        outputBuffer = List.filled(classCount, 0.0).reshape([1, classCount]);
+      } else {
+        outputBuffer = List.filled(classCount, 0).reshape([1, classCount]);
       }
 
-      var output = List.filled(3, 0.0).reshape([1, 3]);
-      _interpreter!.run(input.reshape([1, 224, 224, 3]), output);
-
-      int index = output[0].indexOf(output[0].reduce((a, b) => a > b ? a : b));
-      String result = labels[index];
-      final confidence = output[0][index] * 100;
-      final top3 = _buildTop3(List<double>.from(output[0]));
+      _interpreter!.run(inputData, outputBuffer);
+      final probabilities = _readOutputScores(
+        outputTensor.type,
+        outputTensor.params,
+        outputBuffer,
+      );
+      final index =
+          probabilities.indexOf(probabilities.reduce((a, b) => a > b ? a : b));
+      String result = _labels[index];
+      final confidence = probabilities[index] * 100;
+      final top3 = _buildTop3(probabilities);
       if (confidence < _confidenceThreshold) {
         result = "Unknown";
       }
@@ -287,6 +511,9 @@ class _HomePageState extends State<HomePage> {
   // 4b. SIMULATED Classification (So you don't get stuck)
   void _simulatePrediction() async {
     await Future.delayed(const Duration(seconds: 2)); // Fake thinking time
+    if (!mounted) {
+      return;
+    }
     final random = Random();
     final probabilities = _randomProbabilities(random);
     final top3 = _buildTop3(probabilities);
@@ -296,7 +523,7 @@ class _HomePageState extends State<HomePage> {
     );
     final index =
         probabilities.indexOf(probabilities.reduce((a, b) => a > b ? a : b));
-    String result = labels[index];
+    String result = _labels[index];
     if (confidence < _confidenceThreshold) {
       result = "Unknown";
     }
@@ -316,7 +543,7 @@ class _HomePageState extends State<HomePage> {
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("?? Simulating Result (Check model.tflite)")),
+      const SnackBar(content: Text("Simulated result (demo mode)")),
     );
   }
 
@@ -641,3 +868,4 @@ class _HomePageState extends State<HomePage> {
     );
   }
 }
+
