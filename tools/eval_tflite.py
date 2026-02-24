@@ -20,6 +20,13 @@ def title_label(label: str) -> str:
     return " ".join(p.capitalize() for p in parts if p)
 
 
+def tensor_type_name(tensor_type) -> str:
+    try:
+        return np.dtype(tensor_type).name.lower()
+    except Exception:
+        return str(tensor_type).lower()
+
+
 def load_labels(path: Path) -> list[str]:
     labels = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -68,11 +75,13 @@ def preprocess_image(
     arr = np.asarray(image, dtype=np.uint8)
     rgb = arr.reshape(-1, 3)
 
-    if str(input_type).endswith("float32"):
+    dtype_name = tensor_type_name(input_type)
+
+    if dtype_name == "float32":
         x = (rgb.astype(np.float32) / 127.5) - 1.0
         return x.reshape(1, height, width, 3).astype(np.float32)
 
-    if str(input_type).endswith("uint8"):
+    if dtype_name == "uint8":
         q = np.zeros_like(rgb, dtype=np.uint8)
         for i in range(rgb.shape[0]):
             r = (float(rgb[i, 0]) / 127.5) - 1.0
@@ -83,7 +92,7 @@ def preprocess_image(
             q[i, 2] = quantize(b, input_scale, input_zero, 0, 255)
         return q.reshape(1, height, width, 3).astype(np.uint8)
 
-    if str(input_type).endswith("int8"):
+    if dtype_name == "int8":
         q = np.zeros_like(rgb, dtype=np.int8)
         for i in range(rgb.shape[0]):
             r = (float(rgb[i, 0]) / 127.5) - 1.0
@@ -98,11 +107,13 @@ def preprocess_image(
 
 
 def output_scores(raw, output_type, output_scale: float, output_zero: int) -> list[float]:
-    if str(output_type).endswith("float32"):
+    dtype_name = tensor_type_name(output_type)
+
+    if dtype_name == "float32":
         values = np.asarray(raw, dtype=np.float32).flatten().tolist()
         return ensure_probabilities(values)
 
-    if str(output_type).endswith("uint8") or str(output_type).endswith("int8"):
+    if dtype_name in {"uint8", "int8"}:
         quantized = np.asarray(raw).flatten().tolist()
         if output_scale == 0:
             values = [float(v) for v in quantized]
@@ -178,9 +189,10 @@ def main() -> None:
             int(input_zero),
         )
 
-        if str(output_type).endswith("float32"):
+        output_dtype_name = tensor_type_name(output_type)
+        if output_dtype_name == "float32":
             out = np.zeros((1, n), dtype=np.float32)
-        elif str(output_type).endswith("uint8"):
+        elif output_dtype_name == "uint8":
             out = np.zeros((1, n), dtype=np.uint8)
         else:
             out = np.zeros((1, n), dtype=np.int8)
