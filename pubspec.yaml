@@ -1,5 +1,5 @@
 name: agrisentinel_demo
-description: "A new Flutter project."
+description: "AgriSentinels mobile app for on-device maize disease and pest early warning."
 publish_to: 'none'
 version: 1.0.0+1
 

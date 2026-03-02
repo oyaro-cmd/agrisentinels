@@ -35,6 +35,10 @@ migrate_working_dir/
 
 # Local datasets and review artifacts
 /dataset/
+/dataset_split/
+/model_artifacts/
+/dataset/_review/
+/dataset/_quarantine/
 
 # Export artifacts
 /assets/model_unquant.tflite
