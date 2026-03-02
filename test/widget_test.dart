@@ -1,30 +1,37 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:agrisentinel_demo/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  test('ScanRecord serializes and deserializes consistently', () {
+    final timestamp = DateTime.utc(2026, 2, 24, 10, 30, 0);
+    final record = ScanRecord(
+      imagePath: 'C:/tmp/leaf.jpg',
+      result: 'Leaf Blight',
+      confidence: 82.5,
+      severity: 'Medium',
+      location: 'Lat: -1.2864, Lng: 36.8172',
+      timestamp: timestamp,
+    );
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    final map = record.toMap();
+    final restored = ScanRecord.fromMap(map);
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    expect(restored.imagePath, record.imagePath);
+    expect(restored.result, record.result);
+    expect(restored.confidence, record.confidence);
+    expect(restored.severity, record.severity);
+    expect(restored.location, record.location);
+    expect(restored.timestamp, record.timestamp);
+  });
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  test('ScanRecord.fromMap applies safe defaults for missing fields', () {
+    final restored = ScanRecord.fromMap({});
+
+    expect(restored.imagePath, '');
+    expect(restored.result, 'Unknown');
+    expect(restored.confidence, 0.0);
+    expect(restored.severity, 'Unknown');
+    expect(restored.location, 'Unknown');
   });
 }
