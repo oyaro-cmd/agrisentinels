@@ -1,5 +1,4 @@
 ﻿import 'dart:io';
-import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -7,8 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image/image.dart' as img;
+import 'models.dart';
+import 'dashboard_page.dart';
 
 void main() {
   runApp(const MyApp());
@@ -31,47 +31,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class ScanRecord {
-  final String imagePath;
-  final String result;
-  final double confidence;
-  final String severity;
-  final String location;
-  final DateTime timestamp;
-
-  ScanRecord({
-    required this.imagePath,
-    required this.result,
-    required this.confidence,
-    required this.severity,
-    required this.location,
-    required this.timestamp,
-  });
-
-  Map<String, dynamic> toMap() {
-    return {
-      "imagePath": imagePath,
-      "result": result,
-      "confidence": confidence,
-      "severity": severity,
-      "location": location,
-      "timestamp": timestamp.toIso8601String(),
-    };
-  }
-
-  factory ScanRecord.fromMap(Map<String, dynamic> map) {
-    return ScanRecord(
-      imagePath: map["imagePath"] as String? ?? "",
-      result: map["result"] as String? ?? "Unknown",
-      confidence: (map["confidence"] as num?)?.toDouble() ?? 0.0,
-      severity: map["severity"] as String? ?? "Unknown",
-      location: map["location"] as String? ?? "Unknown",
-      timestamp: DateTime.tryParse(map["timestamp"] as String? ?? "") ??
-          DateTime.fromMillisecondsSinceEpoch(0),
-    );
-  }
-}
-
 class _Score {
   final String label;
   final double score;
@@ -87,7 +46,6 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   static const double _confidenceThreshold = 60.0;
-  static const String _historyStorageKey = "scan_history_v1";
 
   Interpreter? _interpreter;
   File? _image;
@@ -127,29 +85,22 @@ class _HomePageState extends State<HomePage> {
     _checkLocationPermissions();
   }
 
-  // ✅ FIX 1: Added dispose() — was completely missing, leaked native TFLite memory
   @override
   void dispose() {
     _interpreter?.close();
     super.dispose();
   }
 
-  // ✅ FIX 2: split("\n") — was split("\\n") which is literal backslash-n, never splits a real file
-  // ✅ FIX 3: RegExp(r"^\d+\s+(.*)$") — was r"^\\d+\\s+..." which double-escapes inside a raw string
-  // Your labels.txt uses "0 armyworm" format so the regex MUST strip that number prefix
   Future<List<String>> _loadLabelsFromAsset() async {
     final raw = await rootBundle.loadString("assets/labels.txt");
     final parsed = <String>[];
-
     for (final line in raw.split("\n")) {
       final trimmed = line.trim();
       if (trimmed.isEmpty) continue;
-
       final match = RegExp(r"^\d+\s+(.*)$").firstMatch(trimmed);
       final label = (match?.group(1) ?? trimmed).trim();
       parsed.add(_toDisplayLabel(label));
     }
-
     if (parsed.isEmpty) throw StateError("labels.txt is empty");
     return parsed;
   }
@@ -184,55 +135,39 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadHistory() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_historyStorageKey);
-    if (raw == null || raw.isEmpty) return;
-
-    final decoded = jsonDecode(raw) as List<dynamic>;
-    final restored = decoded
-        .map((e) => ScanRecord.fromMap(Map<String, dynamic>.from(e)))
-        .toList();
-
+    final scans = await ScanRecord.loadAll(); // ✅ uses shared models.dart
     if (!mounted) return;
     setState(() {
       _scanHistory
         ..clear()
-        ..addAll(restored);
+        ..addAll(scans);
     });
   }
 
   Future<void> _saveHistory() async {
-    final prefs = await SharedPreferences.getInstance();
-    final payload =
-        jsonEncode(_scanHistory.map((e) => e.toMap()).toList());
-    await prefs.setString(_historyStorageKey, payload);
+    await ScanRecord.saveAll(_scanHistory); // ✅ uses shared models.dart
   }
 
   Future<void> loadModel() async {
     try {
       final loadedLabels = await _loadLabelsFromAsset();
       _interpreter = await Interpreter.fromAsset("assets/model.tflite");
-
       final outputTensor = _interpreter!.getOutputTensor(0);
       final classCount = outputTensor.shape.last;
-
       if (loadedLabels.length != classCount) {
         throw StateError(
           "labels count (${loadedLabels.length}) does not match model output ($classCount)",
         );
       }
-
       setState(() {
         _labels = loadedLabels;
         _modelLoadError = null;
       });
-
       // ✅ DEBUG — remove before release
       final inputTensor = _interpreter!.getInputTensor(0);
       debugPrint("✅ Labels: $_labels");
-      debugPrint("✅ Input shape: ${inputTensor.shape}"); // expect [1, 224, 224, 3]
-      debugPrint("✅ Input type:  ${inputTensor.type}");  // expect float32
-
+      debugPrint("✅ Input shape: ${inputTensor.shape}");
+      debugPrint("✅ Input type:  ${inputTensor.type}");
     } catch (e) {
       _interpreter = null;
       const message =
@@ -253,18 +188,14 @@ class _HomePageState extends State<HomePage> {
       setState(() => _locationMessage = "GPS Disabled");
       return;
     }
-
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
-
-    // ✅ FIX 4: Handle deniedForever — was silently ignored before
     if (permission == LocationPermission.deniedForever) {
       setState(() => _locationMessage = "Location permanently denied");
       return;
     }
-
     if (permission == LocationPermission.whileInUse ||
         permission == LocationPermission.always) {
       _getCurrentLocation();
@@ -289,26 +220,20 @@ class _HomePageState extends State<HomePage> {
   Future<void> pickImage(ImageSource source) async {
     final picked = await _picker.pickImage(source: source);
     if (picked == null) return;
-
     setState(() {
       _image = File(picked.path);
       _result = "Analyzing...";
       _confidence = 0.0;
       _top3 = [];
     });
-
     _getCurrentLocation();
-
     if (_interpreter == null) {
       _handleInferenceFailure(
-        _modelLoadError ??
-            "Model unavailable. Replace assets/model.tflite and assets/labels.txt, then restart.",
+        _modelLoadError ?? "Model unavailable.",
         resultLabel: "Model Error",
       );
       return;
     }
-
-    // ✅ FIX 5: await was missing — caused race condition on fast double-taps
     await classifyImage(_image!);
   }
 
@@ -335,7 +260,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   String _formatTimestamp(DateTime dt) {
-    return "${dt.month}/${dt.day} ${dt.hour.toString().padLeft(2, "0")}:${dt.minute.toString().padLeft(2, "0")}";
+    return "${dt.month}/${dt.day} "
+        "${dt.hour.toString().padLeft(2, "0")}:"
+        "${dt.minute.toString().padLeft(2, "0")}";
   }
 
   void _handleInferenceFailure(String message,
@@ -351,13 +278,8 @@ class _HomePageState extends State<HomePage> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Object _buildInputTensorData(
-    Uint8List rgbaBytes,
-    TensorType inputType,
-    QuantizationParams inputParams,
-    int width,
-    int height,
-  ) {
+  Object _buildInputTensorData(Uint8List rgbaBytes, TensorType inputType,
+      QuantizationParams inputParams, int width, int height) {
     if (inputType == TensorType.float32) {
       final input = Float32List(width * height * 3);
       int i = 0;
@@ -368,7 +290,6 @@ class _HomePageState extends State<HomePage> {
       }
       return input.reshape([1, height, width, 3]);
     }
-
     if (inputType == TensorType.uint8) {
       final input = Uint8List(width * height * 3);
       int i = 0;
@@ -382,7 +303,6 @@ class _HomePageState extends State<HomePage> {
       }
       return input.reshape([1, height, width, 3]);
     }
-
     if (inputType == TensorType.int8) {
       final input = Int8List(width * height * 3);
       int i = 0;
@@ -396,15 +316,11 @@ class _HomePageState extends State<HomePage> {
       }
       return input.reshape([1, height, width, 3]);
     }
-
     throw UnsupportedError("Unsupported input tensor type: $inputType");
   }
 
-  List<double> _readOutputScores(
-    TensorType outputType,
-    QuantizationParams outputParams,
-    Object outputBuffer,
-  ) {
+  List<double> _readOutputScores(TensorType outputType,
+      QuantizationParams outputParams, Object outputBuffer) {
     if (outputType == TensorType.float32) {
       return _ensureProbabilities(
           List<double>.from((outputBuffer as List)[0]));
@@ -446,16 +362,13 @@ class _HomePageState extends State<HomePage> {
       );
       return;
     }
-
     try {
       final rawBytes = await image.readAsBytes();
       final decoded = img.decodeImage(rawBytes);
-
       if (decoded == null) {
         _handleInferenceFailure("Could not decode image. Try a different one.");
         return;
       }
-
       final inputTensor = _interpreter!.getInputTensor(0);
       final inputShape = inputTensor.shape;
       if (inputShape.length < 4 || inputShape[3] != 3) {
@@ -464,8 +377,6 @@ class _HomePageState extends State<HomePage> {
       final inputHeight = inputShape[1];
       final inputWidth = inputShape[2];
 
-      // ✅ FIX 6: Center-crop to square before resize — matches Teachable Machine webcam framing
-      // Without this, portrait/landscape images get squashed and distort features
       final minDim = min(decoded.width, decoded.height);
       final cropped = img.copyCrop(
         decoded,
@@ -480,18 +391,9 @@ class _HomePageState extends State<HomePage> {
         height: inputHeight,
         interpolation: img.Interpolation.linear,
       );
-
-      // ✅ FIX 7: image v4.1.7 uses ChannelOrder enum, NOT Format enum
-      // img.Format.rgba would be a compile error in this version
       final rgbaBytes = processed.getBytes(order: img.ChannelOrder.rgba);
-
       final inputData = _buildInputTensorData(
-        rgbaBytes,
-        inputTensor.type,
-        inputTensor.params,
-        inputWidth,
-        inputHeight,
-      );
+          rgbaBytes, inputTensor.type, inputTensor.params, inputWidth, inputHeight);
 
       final outputTensor = _interpreter!.getOutputTensor(0);
       final classCount = outputTensor.shape.last;
@@ -502,11 +404,7 @@ class _HomePageState extends State<HomePage> {
       _interpreter!.run(inputData, outputBuffer);
 
       final probabilities = _readOutputScores(
-        outputTensor.type,
-        outputTensor.params,
-        outputBuffer,
-      );
-
+          outputTensor.type, outputTensor.params, outputBuffer);
       final index = probabilities
           .indexOf(probabilities.reduce((a, b) => a > b ? a : b));
       final confidence = probabilities[index] * 100;
@@ -519,12 +417,8 @@ class _HomePageState extends State<HomePage> {
         _confidence = confidence;
         _top3 = top3;
       });
-
       _addHistoryEntry(
-        imagePath: image.path,
-        result: result,
-        confidence: confidence,
-      );
+          imagePath: image.path, result: result, confidence: confidence);
     } catch (e) {
       _handleInferenceFailure("Image analysis failed: $e");
     }
@@ -540,6 +434,20 @@ class _HomePageState extends State<HomePage> {
         backgroundColor: Colors.green[800],
         centerTitle: true,
         elevation: 0,
+        // ✅ NEW: Dashboard navigation button
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.dashboard, color: Colors.white),
+            tooltip: "Dashboard",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const DashboardPage()),
+              );
+            },
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         child: Column(
@@ -551,7 +459,8 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 children: [
                   const Text("Early Warning System",
-                      style: TextStyle(color: Colors.white70, fontSize: 12)),
+                      style:
+                          TextStyle(color: Colors.white70, fontSize: 12)),
                   const SizedBox(height: 5),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -568,9 +477,7 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
-
             const SizedBox(height: 20),
-
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Container(
@@ -603,9 +510,7 @@ class _HomePageState extends State<HomePage> {
                       ),
               ),
             ),
-
             const SizedBox(height: 30),
-
             if (_image != null)
               Container(
                 margin: const EdgeInsets.symmetric(horizontal: 20),
@@ -632,13 +537,12 @@ class _HomePageState extends State<HomePage> {
                 ),
                 child: Column(
                   children: [
-                    // ✅ FIX 8: Spinner while analyzing — was just text before
                     if (_result == "Analyzing...")
                       const Padding(
                         padding: EdgeInsets.symmetric(vertical: 12),
-                        child: CircularProgressIndicator(color: Colors.green),
+                        child: CircularProgressIndicator(
+                            color: Colors.green),
                       ),
-
                     Text(
                       _result.toUpperCase(),
                       style: TextStyle(
@@ -651,7 +555,6 @@ class _HomePageState extends State<HomePage> {
                                 : Colors.red[800]),
                       ),
                     ),
-
                     if (_result != "Analyzing...")
                       Container(
                         margin: const EdgeInsets.only(top: 8),
@@ -690,16 +593,13 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                       ),
-
                     if (_result != "Analyzing...")
                       Text(
                         "Confidence: ${_confidence.toStringAsFixed(1)}%",
                         style: TextStyle(color: Colors.grey[600]),
                       ),
-
                     if (_result != "Analyzing..." && _top3.isNotEmpty)
                       const SizedBox(height: 8),
-
                     if (_result != "Analyzing..." && _top3.isNotEmpty)
                       Container(
                         width: double.infinity,
@@ -713,19 +613,20 @@ class _HomePageState extends State<HomePage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text("Top 3 Predictions",
-                                style: TextStyle(fontWeight: FontWeight.bold)),
+                                style: TextStyle(
+                                    fontWeight: FontWeight.bold)),
                             const SizedBox(height: 6),
                             for (final score in _top3)
                               Text(
                                 "${score.label}: ${score.score.toStringAsFixed(1)}%",
-                                style: TextStyle(color: Colors.grey[700]),
+                                style:
+                                    TextStyle(color: Colors.grey[700]),
                               ),
                           ],
                         ),
                       ),
-
-                    if (_result != "Analyzing...") const SizedBox(height: 12),
-
+                    if (_result != "Analyzing...")
+                      const SizedBox(height: 12),
                     if (_result != "Analyzing...")
                       Container(
                         width: double.infinity,
@@ -739,7 +640,8 @@ class _HomePageState extends State<HomePage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text("Recommended Actions",
-                                style: TextStyle(fontWeight: FontWeight.bold)),
+                                style: TextStyle(
+                                    fontWeight: FontWeight.bold)),
                             const SizedBox(height: 6),
                             Text(
                               adviceByLabel[_result] ??
@@ -752,9 +654,7 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
               ),
-
             const SizedBox(height: 30),
-
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Row(
@@ -767,7 +667,8 @@ class _HomePageState extends State<HomePage> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.grey[800],
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 15),
+                        padding:
+                            const EdgeInsets.symmetric(vertical: 15),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12)),
                       ),
@@ -782,7 +683,8 @@ class _HomePageState extends State<HomePage> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.grey[300],
                         foregroundColor: Colors.black87,
-                        padding: const EdgeInsets.symmetric(vertical: 15),
+                        padding:
+                            const EdgeInsets.symmetric(vertical: 15),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12)),
                       ),
@@ -791,9 +693,7 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
-
             const SizedBox(height: 30),
-
             if (_scanHistory.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -802,13 +702,15 @@ class _HomePageState extends State<HomePage> {
                   children: [
                     const Text("Recent Scans",
                         style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.w800)),
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800)),
                     const SizedBox(height: 12),
                     ListView.separated(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
                       itemCount: _scanHistory.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      separatorBuilder: (_, __) =>
+                          const SizedBox(height: 10),
                       itemBuilder: (context, index) {
                         final scan = _scanHistory[index];
                         return Container(
@@ -816,10 +718,12 @@ class _HomePageState extends State<HomePage> {
                           decoration: BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.grey.shade200),
+                            border: Border.all(
+                                color: Colors.grey.shade200),
                             boxShadow: [
                               BoxShadow(
-                                color: Colors.black.withValues(alpha: 0.05),
+                                color: Colors.black
+                                    .withValues(alpha: 0.05),
                                 blurRadius: 6,
                                 offset: const Offset(0, 3),
                               )
@@ -839,16 +743,18 @@ class _HomePageState extends State<HomePage> {
                               const SizedBox(width: 12),
                               Expanded(
                                 child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
                                   children: [
                                     Text(scan.result,
                                         style: const TextStyle(
-                                            fontWeight: FontWeight.bold)),
+                                            fontWeight:
+                                                FontWeight.bold)),
                                     const SizedBox(height: 4),
                                     Text(
                                       "Severity: ${scan.severity} - ${scan.confidence.toStringAsFixed(1)}%",
-                                      style:
-                                          TextStyle(color: Colors.grey[700]),
+                                      style: TextStyle(
+                                          color: Colors.grey[700]),
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
@@ -868,7 +774,6 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
               ),
-
             const SizedBox(height: 20),
           ],
         ),
