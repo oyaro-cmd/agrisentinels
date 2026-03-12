@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:agrisentinel_demo/main.dart';
+import 'package:agrisentinel_demo/models.dart';
 
 void main() {
   test('ScanRecord serializes and deserializes consistently', () {
