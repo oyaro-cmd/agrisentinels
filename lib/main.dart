@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:image/image.dart' as img;
 import 'models.dart';
 import 'dashboard_page.dart';
+import 'heatmap_page.dart'; // ✅ NEW
 
 void main() {
   runApp(const MyApp());
@@ -135,7 +136,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadHistory() async {
-    final scans = await ScanRecord.loadAll(); // ✅ uses shared models.dart
+    final scans = await ScanRecord.loadAll();
     if (!mounted) return;
     setState(() {
       _scanHistory
@@ -145,7 +146,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _saveHistory() async {
-    await ScanRecord.saveAll(_scanHistory); // ✅ uses shared models.dart
+    await ScanRecord.saveAll(_scanHistory);
   }
 
   Future<void> loadModel() async {
@@ -163,7 +164,7 @@ class _HomePageState extends State<HomePage> {
         _labels = loadedLabels;
         _modelLoadError = null;
       });
-      // ✅ DEBUG — remove before release
+      // TODO: remove before release
       final inputTensor = _interpreter!.getInputTensor(0);
       debugPrint("✅ Labels: $_labels");
       debugPrint("✅ Input shape: ${inputTensor.shape}");
@@ -226,7 +227,7 @@ class _HomePageState extends State<HomePage> {
       _confidence = 0.0;
       _top3 = [];
     });
-    _getCurrentLocation();
+    await _getCurrentLocation();
     if (_interpreter == null) {
       _handleInferenceFailure(
         _modelLoadError ?? "Model unavailable.",
@@ -297,9 +298,12 @@ class _HomePageState extends State<HomePage> {
         final r = (rgbaBytes[p] / 127.5) - 1.0;
         final g = (rgbaBytes[p + 1] / 127.5) - 1.0;
         final b = (rgbaBytes[p + 2] / 127.5) - 1.0;
-        input[i++] = _quantizeToInt(r, inputParams.scale, inputParams.zeroPoint, 0, 255);
-        input[i++] = _quantizeToInt(g, inputParams.scale, inputParams.zeroPoint, 0, 255);
-        input[i++] = _quantizeToInt(b, inputParams.scale, inputParams.zeroPoint, 0, 255);
+        input[i++] = _quantizeToInt(
+            r, inputParams.scale, inputParams.zeroPoint, 0, 255);
+        input[i++] = _quantizeToInt(
+            g, inputParams.scale, inputParams.zeroPoint, 0, 255);
+        input[i++] = _quantizeToInt(
+            b, inputParams.scale, inputParams.zeroPoint, 0, 255);
       }
       return input.reshape([1, height, width, 3]);
     }
@@ -310,9 +314,12 @@ class _HomePageState extends State<HomePage> {
         final r = (rgbaBytes[p] / 127.5) - 1.0;
         final g = (rgbaBytes[p + 1] / 127.5) - 1.0;
         final b = (rgbaBytes[p + 2] / 127.5) - 1.0;
-        input[i++] = _quantizeToInt(r, inputParams.scale, inputParams.zeroPoint, -128, 127);
-        input[i++] = _quantizeToInt(g, inputParams.scale, inputParams.zeroPoint, -128, 127);
-        input[i++] = _quantizeToInt(b, inputParams.scale, inputParams.zeroPoint, -128, 127);
+        input[i++] = _quantizeToInt(
+            r, inputParams.scale, inputParams.zeroPoint, -128, 127);
+        input[i++] = _quantizeToInt(
+            g, inputParams.scale, inputParams.zeroPoint, -128, 127);
+        input[i++] = _quantizeToInt(
+            b, inputParams.scale, inputParams.zeroPoint, -128, 127);
       }
       return input.reshape([1, height, width, 3]);
     }
@@ -366,7 +373,8 @@ class _HomePageState extends State<HomePage> {
       final rawBytes = await image.readAsBytes();
       final decoded = img.decodeImage(rawBytes);
       if (decoded == null) {
-        _handleInferenceFailure("Could not decode image. Try a different one.");
+        _handleInferenceFailure(
+            "Could not decode image. Try a different one.");
         return;
       }
       final inputTensor = _interpreter!.getInputTensor(0);
@@ -376,7 +384,6 @@ class _HomePageState extends State<HomePage> {
       }
       final inputHeight = inputShape[1];
       final inputWidth = inputShape[2];
-
       final minDim = min(decoded.width, decoded.height);
       final cropped = img.copyCrop(
         decoded,
@@ -392,17 +399,14 @@ class _HomePageState extends State<HomePage> {
         interpolation: img.Interpolation.linear,
       );
       final rgbaBytes = processed.getBytes(order: img.ChannelOrder.rgba);
-      final inputData = _buildInputTensorData(
-          rgbaBytes, inputTensor.type, inputTensor.params, inputWidth, inputHeight);
-
+      final inputData = _buildInputTensorData(rgbaBytes, inputTensor.type,
+          inputTensor.params, inputWidth, inputHeight);
       final outputTensor = _interpreter!.getOutputTensor(0);
       final classCount = outputTensor.shape.last;
       final outputBuffer = outputTensor.type == TensorType.float32
           ? List.filled(classCount, 0.0).reshape([1, classCount])
           : List.filled(classCount, 0).reshape([1, classCount]);
-
       _interpreter!.run(inputData, outputBuffer);
-
       final probabilities = _readOutputScores(
           outputTensor.type, outputTensor.params, outputBuffer);
       final index = probabilities
@@ -411,14 +415,15 @@ class _HomePageState extends State<HomePage> {
       final top3 = _buildTop3(probabilities);
       final result =
           confidence < _confidenceThreshold ? "Unknown" : _labels[index];
-
       setState(() {
         _result = result;
         _confidence = confidence;
         _top3 = top3;
       });
       _addHistoryEntry(
-          imagePath: image.path, result: result, confidence: confidence);
+          imagePath: image.path,
+          result: result,
+          confidence: confidence);
     } catch (e) {
       _handleInferenceFailure("Image analysis failed: $e");
     }
@@ -429,23 +434,29 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text("AgriSentinels",
-            style:
-                TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            style: TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold)),
         backgroundColor: Colors.green[800],
         centerTitle: true,
         elevation: 0,
-        // ✅ NEW: Dashboard navigation button
         actions: [
+          // ✅ Dashboard icon
           IconButton(
             icon: const Icon(Icons.dashboard, color: Colors.white),
             tooltip: "Dashboard",
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (_) => const DashboardPage()),
-              );
-            },
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const DashboardPage()),
+            ),
+          ),
+          // ✅ NEW: Heatmap icon
+          IconButton(
+            icon: const Icon(Icons.map, color: Colors.white),
+            tooltip: "Outbreak Heatmap",
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const HeatmapPage()),
+            ),
           ),
         ],
       ),
@@ -498,10 +509,12 @@ class _HomePageState extends State<HomePage> {
                     ? Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(Icons.spa, size: 60, color: Colors.green[100]),
+                          Icon(Icons.spa,
+                              size: 60, color: Colors.green[100]),
                           const SizedBox(height: 10),
                           Text("No Crop Scanned",
-                              style: TextStyle(color: Colors.grey[400])),
+                              style:
+                                  TextStyle(color: Colors.grey[400])),
                         ],
                       )
                     : ClipRRect(
@@ -565,7 +578,8 @@ class _HomePageState extends State<HomePage> {
                               ? Colors.green[100]
                               : (severityByLabel[_result] == "Medium"
                                   ? Colors.orange[100]
-                                  : (severityByLabel[_result] == "Unknown"
+                                  : (severityByLabel[_result] ==
+                                          "Unknown"
                                       ? Colors.grey[200]
                                       : Colors.red[100])),
                           borderRadius: BorderRadius.circular(999),
@@ -574,7 +588,8 @@ class _HomePageState extends State<HomePage> {
                                 ? Colors.green
                                 : (severityByLabel[_result] == "Medium"
                                     ? Colors.orange
-                                    : (severityByLabel[_result] == "Unknown"
+                                    : (severityByLabel[_result] ==
+                                            "Unknown"
                                         ? Colors.grey
                                         : Colors.red)),
                           ),
@@ -587,7 +602,8 @@ class _HomePageState extends State<HomePage> {
                                 ? Colors.green[800]
                                 : (severityByLabel[_result] == "Medium"
                                     ? Colors.orange[800]
-                                    : (severityByLabel[_result] == "Unknown"
+                                    : (severityByLabel[_result] ==
+                                            "Unknown"
                                         ? Colors.grey[800]
                                         : Colors.red[800])),
                           ),
@@ -607,7 +623,8 @@ class _HomePageState extends State<HomePage> {
                         decoration: BoxDecoration(
                           color: Colors.grey[50],
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.grey.shade200),
+                          border:
+                              Border.all(color: Colors.grey.shade200),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -634,7 +651,8 @@ class _HomePageState extends State<HomePage> {
                         decoration: BoxDecoration(
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.grey.shade200),
+                          border:
+                              Border.all(color: Colors.grey.shade200),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -646,7 +664,8 @@ class _HomePageState extends State<HomePage> {
                             Text(
                               adviceByLabel[_result] ??
                                   "No guidance available.",
-                              style: TextStyle(color: Colors.grey[700]),
+                              style:
+                                  TextStyle(color: Colors.grey[700]),
                             ),
                           ],
                         ),
@@ -732,12 +751,26 @@ class _HomePageState extends State<HomePage> {
                           child: Row(
                             children: [
                               ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
+                                borderRadius:
+                                    BorderRadius.circular(8),
                                 child: Image.file(
                                   File(scan.imagePath),
                                   width: 56,
                                   height: 56,
                                   fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) =>
+                                      Container(
+                                    width: 56,
+                                    height: 56,
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey[100],
+                                      borderRadius:
+                                          BorderRadius.circular(8),
+                                    ),
+                                    child: Icon(
+                                        Icons.image_not_supported,
+                                        color: Colors.grey[400]),
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 12),
